@@ -1,11 +1,13 @@
 package middleware
 
 import (
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/MicahParks/keyfunc"
-	"github.com/gofiber/fiber"
-	"github.com/golang-jwt/jwt"
+	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v4"
 )
 
 func AuthRequired(auth0Domain, auth0Audience string) fiber.Handler {
@@ -31,7 +33,7 @@ func AuthRequired(auth0Domain, auth0Audience string) fiber.Handler {
 			})
 		}
 
-		tokenString := authHeader[len("Bearer "):]
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
 		// Parse and validate the token
 		token, err := jwt.Parse(tokenString, jwks.Keyfunc)
@@ -49,14 +51,14 @@ func AuthRequired(auth0Domain, auth0Audience string) fiber.Handler {
 		}
 
 		// Verify audience
-		if !claims.VerifyAudience(auth0Audience, true) {
+		if err := verifyAudience(claims, auth0Audience); err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Invalid audience",
 			})
 		}
 
 		// Verify issuer
-		if !claims.VerifyIssuer("https://"+auth0Domain+"/", true) {
+		if err := verifyIssuer(claims, "https://"+auth0Domain+"/"); err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Invalid issuer",
 			})
@@ -66,4 +68,26 @@ func AuthRequired(auth0Domain, auth0Audience string) fiber.Handler {
 		c.Locals("user", claims)
 		return c.Next()
 	}
+}
+
+func verifyAudience(claims jwt.MapClaims, expectedAudience string) error {
+	aud, ok := claims["aud"].(string)
+	if !ok {
+		return errors.New("audience claim is missing or invalid")
+	}
+	if aud != expectedAudience {
+		return errors.New("invalid audience")
+	}
+	return nil
+}
+
+func verifyIssuer(claims jwt.MapClaims, expectedIssuer string) error {
+	iss, ok := claims["iss"].(string)
+	if !ok {
+		return errors.New("issuer claim is missing or invalid")
+	}
+	if iss != expectedIssuer {
+		return errors.New("invalid issuer")
+	}
+	return nil
 }

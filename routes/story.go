@@ -1,9 +1,9 @@
 package routes
 
 import (
+	"github.com/1rvyn/halloween-story-generator/database"
+	"github.com/1rvyn/halloween-story-generator/models"
 	"github.com/gofiber/fiber/v2"
-	"github.com/yourusername/halloween-story-generator/database"
-	"github.com/yourusername/halloween-story-generator/models"
 )
 
 func CreateStory(c *fiber.Ctx) error {
