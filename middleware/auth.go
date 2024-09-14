@@ -2,16 +2,22 @@ package middleware
 
 import (
 	"errors"
-	"strings"
+	"fmt"
+	"os"
 	"time"
 
+	"github.com/1rvyn/halloween-story-generator/database"
+	"github.com/1rvyn/halloween-story-generator/models"
 	"github.com/MicahParks/keyfunc"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v4"
 )
 
-func AuthRequired(auth0Domain, auth0Audience string) fiber.Handler {
-	// Fetch JWKS from Auth0
+// Global variable to store JWKS
+var jwks *keyfunc.JWKS
+
+// InitializeJWKS initializes the JWKS and should be called during application startup
+func InitializeJWKS(auth0Domain string) error {
 	jwksURL := "https://" + auth0Domain + "/.well-known/jwks.json"
 	options := keyfunc.Options{
 		RefreshInterval:   time.Hour,
@@ -19,12 +25,25 @@ func AuthRequired(auth0Domain, auth0Audience string) fiber.Handler {
 		RefreshTimeout:    time.Second * 10,
 		RefreshUnknownKID: true,
 	}
-	jwks, err := keyfunc.Get(jwksURL, options)
+	var err error
+	jwks, err = keyfunc.Get(jwksURL, options)
 	if err != nil {
-		panic("Failed to get JWKS from Auth0: " + err.Error())
+		return fmt.Errorf("failed to get JWKS from Auth0: %w", err)
 	}
+	return nil
+}
 
+// AuthRequired is a middleware that protects API routes using JWT
+func AuthRequired() fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		fmt.Println("AuthRequired middleware invoked")
+
+		if jwks == nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "JWKS not initialized",
+			})
+		}
+
 		// Get the token from the Authorization header
 		authHeader := c.Get("Authorization")
 		if authHeader == "" {
@@ -33,7 +52,13 @@ func AuthRequired(auth0Domain, auth0Audience string) fiber.Handler {
 			})
 		}
 
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		tokenString := ""
+		fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
+		if tokenString == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Invalid Authorization header format",
+			})
+		}
 
 		// Parse and validate the token
 		token, err := jwt.Parse(tokenString, jwks.Keyfunc)
@@ -50,19 +75,46 @@ func AuthRequired(auth0Domain, auth0Audience string) fiber.Handler {
 			})
 		}
 
+		fmt.Printf("Token Audience: %v\n", claims["aud"]) // Add this line for debugging
+
 		// Verify audience
-		if err := verifyAudience(claims, auth0Audience); err != nil {
+		expectedAudience := os.Getenv("AUTH0_AUDIENCE")
+		if err := verifyAudience(claims, expectedAudience); err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Invalid audience",
 			})
 		}
 
 		// Verify issuer
-		if err := verifyIssuer(claims, "https://"+auth0Domain+"/"); err != nil {
+		expectedIssuer := "https://" + os.Getenv("AUTH0_DOMAIN") + "/"
+		if err := verifyIssuer(claims, expectedIssuer); err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Invalid issuer",
 			})
 		}
+
+		// **New Code Starts Here**
+
+		// Extract the 'sub' claim from the token
+		sub, ok := claims["sub"].(string)
+		if !ok {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Invalid token claims: 'sub' missing",
+			})
+		}
+
+		// Query the database to find the user by Auth0 ID
+		var user models.User
+		if err := database.DB.Where("auth0_id = ?", sub).First(&user).Error; err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "User not found",
+			})
+		}
+
+		// Set 'user_id' in locals for route handlers to access
+		c.Locals("user_id", user.ID)
+
+		// **New Code Ends Here**
 
 		// Store user information in context
 		c.Locals("user", claims)
@@ -71,13 +123,31 @@ func AuthRequired(auth0Domain, auth0Audience string) fiber.Handler {
 }
 
 func verifyAudience(claims jwt.MapClaims, expectedAudience string) error {
-	aud, ok := claims["aud"].(string)
+	audValue, ok := claims["aud"]
 	if !ok {
-		return errors.New("audience claim is missing or invalid")
+		return errors.New("audience claim is missing")
 	}
-	if aud != expectedAudience {
-		return errors.New("invalid audience")
+
+	switch aud := audValue.(type) {
+	case string:
+		if aud != expectedAudience {
+			return errors.New("invalid audience")
+		}
+	case []interface{}:
+		found := false
+		for _, a := range aud {
+			if aStr, ok := a.(string); ok && aStr == expectedAudience {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return errors.New("invalid audience")
+		}
+	default:
+		return errors.New("invalid audience claim format")
 	}
+
 	return nil
 }
 

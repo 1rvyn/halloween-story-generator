@@ -2,15 +2,20 @@ package routes
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"log"
 	"strings"
 
+	"github.com/1rvyn/halloween-story-generator/database"
+	"github.com/1rvyn/halloween-story-generator/models"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/session"
 	"golang.org/x/oauth2"
 )
 
@@ -110,7 +115,10 @@ func getManagementAPIToken() string {
 }
 
 func LoginWithGoogle(c *fiber.Ctx) error {
-	url := auth0OauthConfig.AuthCodeURL(oauthStateString, oauth2.SetAuthURLParam("connection", "google-oauth2"))
+	url := auth0OauthConfig.AuthCodeURL(oauthStateString,
+		oauth2.SetAuthURLParam("connection", "google-oauth2"),
+		oauth2.SetAuthURLParam("audience", os.Getenv("AUTH0_AUDIENCE")), // Add audience parameter
+	)
 	return c.Redirect(url)
 }
 
@@ -121,12 +129,12 @@ func Callback(c *fiber.Ctx) error {
 	}
 
 	code := c.Query("code")
-	token, err := auth0OauthConfig.Exchange(oauth2.NoContext, code)
+	token, err := auth0OauthConfig.Exchange(context.Background(), code)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString("Code exchange failed")
 	}
 
-	client := auth0OauthConfig.Client(oauth2.NoContext, token)
+	client := auth0OauthConfig.Client(context.Background(), token)
 	resp, err := client.Get(fmt.Sprintf("https://%s/userinfo", os.Getenv("AUTH0_DOMAIN")))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed getting user info")
@@ -138,8 +146,65 @@ func Callback(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).SendString("Failed decoding user info")
 	}
 
-	// Here you would typically create or update the user in your database
-	// and set up a session or JWT for the authenticated user
+	// Check if user exists in database, if not create new user
+	var user models.User
+	result := database.DB.Where("auth0_id = ?", userInfo["sub"]).First(&user)
+	if result.Error != nil {
+		// User doesn't exist, create new user
+		user = models.User{
+			Email:         userInfo["email"].(string),
+			Name:          userInfo["name"].(string),
+			Picture:       userInfo["picture"].(string),
+			Auth0ID:       userInfo["sub"].(string),
+			EmailVerified: userInfo["email_verified"].(bool),
+		}
+		if err := database.DB.Create(&user).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString("Failed to create user in database")
+		}
+	} else {
+		// User exists, update information
+		user.Email = userInfo["email"].(string)
+		user.Name = userInfo["name"].(string)
+		user.Picture = userInfo["picture"].(string)
+		user.EmailVerified = userInfo["email_verified"].(bool)
+		if err := database.DB.Save(&user).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).SendString("Failed to update user in database")
+		}
+	}
 
-	return c.JSON(userInfo)
+	// Set a cookie with the JWT token
+	c.Cookie(&fiber.Cookie{
+		Name:     "jwt",
+		Value:    token.AccessToken,
+		Expires:  time.Now().Add(time.Hour * 24),
+		HTTPOnly: false, // Allow JavaScript to access the cookie
+	})
+
+	// Store user ID in session instead of full user info
+	sess, err := store.Get(c)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("Error getting session")
+	}
+
+	sess.Set("user_id", user.ID)
+	if err := sess.Save(); err != nil {
+		return c.Status(fiber.StatusInternalServerError).SendString("Error saving session")
+	}
+
+	// Redirect to the correct dashboard route
+	return c.Redirect("/dashboard") // Now correctly protected by session
+}
+
+// ViewStory handles the GET /story route
+func ViewStory(c *fiber.Ctx) error {
+	// Implement logic to display the story
+	return c.Render("story", fiber.Map{
+		"Title": "Write Your Story",
+	})
+}
+
+var store *session.Store
+
+func SetStore(s *session.Store) {
+	store = s
 }

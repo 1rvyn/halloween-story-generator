@@ -34,8 +34,23 @@ func Connect() error {
 		return err
 	}
 
-	err = DB.AutoMigrate(&models.Story{})
-	if err != nil {
+	// Drop and recreate the users table to add PRIMARY KEY
+	if DB.Migrator().HasTable(&models.User{}) {
+		if err := DB.Migrator().DropTable(&models.User{}); err != nil {
+			return err
+		}
+	}
+	if err := DB.AutoMigrate(&models.User{}); err != nil {
+		return err
+	}
+
+	// Drop and recreate the stories table to ensure consistency
+	if DB.Migrator().HasTable(&models.Story{}) {
+		if err := DB.Migrator().DropTable(&models.Story{}); err != nil {
+			return err
+		}
+	}
+	if err := DB.AutoMigrate(&models.Story{}); err != nil {
 		return err
 	}
 

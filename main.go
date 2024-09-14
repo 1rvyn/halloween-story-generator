@@ -9,6 +9,7 @@ import (
 	"github.com/1rvyn/halloween-story-generator/middleware"
 	"github.com/1rvyn/halloween-story-generator/routes"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/session"
 	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
 )
@@ -19,6 +20,7 @@ var (
 	auth0ClientID     string
 	auth0ClientSecret string
 	auth0CallbackURL  string
+	store             *session.Store
 )
 
 func init() {
@@ -38,15 +40,25 @@ func init() {
 
 	fmt.Printf("Auth0 Domain: %s, Auth0 Audience: %s, Callback URL: %s\n",
 		auth0Domain, auth0Audience, auth0CallbackURL)
+
+	// Initialize session store
+	store = session.New()
+	routes.SetStore(store)            // Set the session store in routes
+	middleware.SetSessionStore(store) // Set the session store in middleware
 }
 
 func main() {
 	// Initialize database
-
 	fmt.Printf("Auth0 Domain: %s, Auth0 Audience: %s\n", auth0Domain, auth0Audience)
 
 	if err := database.Connect(); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
+	}
+
+	// Initialize JWKS
+	err := middleware.InitializeJWKS(auth0Domain)
+	if err != nil {
+		log.Fatalf("Failed to initialize JWKS: %v", err)
 	}
 
 	// Create a new Fiber instance
@@ -66,13 +78,17 @@ func setupRoutes(app *fiber.App) {
 	app.Get("/signup", routes.SignupPage)
 	app.Post("/signup", routes.Signup)
 
-	// Protected routes
-	api := app.Group("/api", middleware.AuthRequired(auth0Domain, auth0Audience))
-
-	api.Post("/story", routes.CreateStory)
-	api.Get("/stories", routes.GetStories)
-
 	// Google login routes
 	app.Get("/login/google", routes.LoginWithGoogle)
 	app.Get("/callback", routes.Callback)
+
+	// Protected API routes
+	api := app.Group("/api", middleware.AuthRequired())
+	api.Post("/story", routes.CreateStory)
+	api.Get("/stories", routes.GetStories)
+
+	// Protected web routes
+	protected := app.Group("/", middleware.SessionAuthRequired())
+	protected.Get("/dashboard", routes.Dashboard)
+	protected.Get("/story", routes.ViewStory) // Define the GET /story route
 }
