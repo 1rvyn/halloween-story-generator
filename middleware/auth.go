@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,12 +10,18 @@ import (
 	"github.com/1rvyn/halloween-story-generator/database"
 	"github.com/1rvyn/halloween-story-generator/models"
 	"github.com/MicahParks/keyfunc"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v4"
 )
 
 // Global variable to store JWKS
 var jwks *keyfunc.JWKS
+
+// Global variable to store S3 client for R2
+var R2Client *s3.Client
 
 // InitializeJWKS initializes the JWKS and should be called during application startup
 func InitializeJWKS(auth0Domain string) error {
@@ -30,6 +37,24 @@ func InitializeJWKS(auth0Domain string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get JWKS from Auth0: %w", err)
 	}
+	return nil
+}
+
+// InitializeR2 initializes the Cloudflare R2 client
+func InitializeR2() error {
+	cfg, err := config.LoadDefaultConfig(context.TODO(),
+		config.WithRegion("auto"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	R2Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(os.Getenv("R2_DEV_ENDPOINT"))
+		o.Region = "auto"
+		o.UsePathStyle = true
+	})
+
 	return nil
 }
 

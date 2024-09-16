@@ -1,13 +1,38 @@
 package models
 
-type Prompt struct {
-	Name   string `json:"name"`
-	Prompt string `json:"prompt"`
-	Source string `json:"source"`
+import "encoding/xml"
+
+type StorySegmentation struct {
+	Prompt string
 }
 
-var StorySegmentation = Prompt{
-	Name: "Story Segmentation",
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type SegmentXML struct {
+	Number  string `xml:"number,attr"`
+	Content string `xml:",chardata"`
+}
+
+type GroqResponse struct {
+	XMLName  xml.Name     `xml:"response"`
+	Segments []SegmentXML `xml:"segment"`
+}
+
+type GroqRequest struct {
+	Messages    []Message   `json:"messages"`
+	Model       string      `json:"model"`
+	Temperature float64     `json:"temperature"`
+	MaxTokens   int         `json:"max_tokens"`
+	TopP        float64     `json:"top_p"`
+	Stream      bool        `json:"stream"`
+	Stop        interface{} `json:"stop"`
+}
+
+// Initialize the prompt, possibly from environment or configuration
+var StorySegmentationInstance = StorySegmentation{
 	Prompt: `You are tasked with segmenting a scary story into smaller parts that can be used for narration in a video. Each segment should correspond to a distinct part of the story that could be paired with a single image or scene in the video. Here's how to approach this task:
 
 1. First, you will be given a scary story in the following format:
@@ -40,5 +65,4 @@ Gathering her courage, Sarah decided to investigate. She grabbed a flashlight an
 </segment>
 
 6. Now, please process the provided story and create appropriate segments. Remember to consider the narrative flow and how each segment might be represented visually in a video.`,
-	Source: "Anthropic",
 }
