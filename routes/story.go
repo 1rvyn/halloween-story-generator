@@ -146,20 +146,10 @@ func CreateStory(c *fiber.Ctx) error {
 
 	// Apply the custom escape function
 
-	fmt.Println("Escaped XML content:", xmlContent)
-	// Unescape the content using json.Unmarshal
-	var unescapedXML string
-	if err := json.Unmarshal([]byte(`"`+strings.ReplaceAll(xmlContent, `"`, `\"`)+`"`), &unescapedXML); err != nil {
-		log.Printf("Error unescaping XML content: %v", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Invalid XML content",
-		})
-	}
-
-	fmt.Println("Unescaped XML content:", unescapedXML)
+	fmt.Println("XML content:", xmlContent)
 
 	segmentRegex := regexp.MustCompile(`<segment number="(\d+)">\s*([\s\S]*?)\s*</segment>`)
-	matches := segmentRegex.FindAllStringSubmatch(unescapedXML, -1)
+	matches := segmentRegex.FindAllStringSubmatch(xmlContent, -1)
 	if matches == nil {
 		log.Printf("No segments found in Groq response")
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -201,7 +191,6 @@ func CreateStory(c *fiber.Ctx) error {
 		// **Generate Image for Segment Starts Here**
 
 		// Prepare Replicate API request payload
-
 		replicatePayload := map[string]interface{}{
 			"input": map[string]interface{}{
 				"prompt":         fmt.Sprintf("%s, tasty, food photography, dynamic shot", segmentContent),

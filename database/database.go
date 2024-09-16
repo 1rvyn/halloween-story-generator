@@ -54,5 +54,9 @@ func Connect() error {
 		return err
 	}
 
+	if err := DB.AutoMigrate(&models.Segment{}); err != nil {
+		return err
+	}
+
 	return nil
 }
