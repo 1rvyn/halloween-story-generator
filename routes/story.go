@@ -3,14 +3,15 @@ package routes
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"encoding/xml"
+	"encoding/json" // Ensure xml is imported for XML parsing
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv" // Add strconv for string to int conversion
 	"strings"
 
 	"github.com/1rvyn/halloween-story-generator/database"
@@ -20,6 +21,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gofiber/fiber/v2"
 )
+
+func unescapeUnicodeCharactersInJSON(s string) (string, error) {
+	var unescaped string
+	err := json.Unmarshal([]byte(`"`+strings.ReplaceAll(s, `"`, `\"`)+`"`), &unescaped)
+	if err != nil {
+		return "", err
+	}
+	return unescaped, nil
+}
 
 func CreateStory(c *fiber.Ctx) error {
 	story := new(models.Story)
@@ -49,7 +59,7 @@ func CreateStory(c *fiber.Ctx) error {
 		Temperature: 1,
 		MaxTokens:   1024,
 		TopP:        1,
-		Stream:      true,
+		Stream:      false, // Changed from true to false
 		Stop:        nil,
 	}
 
@@ -97,18 +107,79 @@ func CreateStory(c *fiber.Ctx) error {
 
 	// **Parse Groq Response into Segments Starts Here**
 
-	// Assuming the Groq API returns XML with multiple <segment> tags
+	// Define structs to parse the Groq API JSON response
+	type Message struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
 
-	var groqResp models.GroqResponse
-	if err := xml.Unmarshal(body, &groqResp); err != nil {
-		log.Printf("Error unmarshalling Groq response: %v", err)
+	type Choice struct {
+		Index   int     `json:"index"`
+		Message Message `json:"message"`
+	}
+
+	type GroqAPIResponse struct {
+		ID      string   `json:"id"`
+		Object  string   `json:"object"`
+		Created int64    `json:"created"`
+		Model   string   `json:"model"`
+		Choices []Choice `json:"choices"`
+	}
+
+	var apiResp GroqAPIResponse
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		log.Printf("Error unmarshalling Groq API response: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Invalid Groq response format",
+		})
+	}
+
+	if len(apiResp.Choices) == 0 {
+		log.Printf("No choices found in Groq response")
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Invalid Groq response",
 		})
 	}
 
-	for _, seg := range groqResp.Segments {
-		segmentContent := strings.TrimSpace(seg.Content)
+	// Extract the content which contains the XML segments
+	xmlContent := apiResp.Choices[0].Message.Content
+
+	// Apply the custom escape function
+
+	fmt.Println("Escaped XML content:", xmlContent)
+	// Unescape the content using json.Unmarshal
+	var unescapedXML string
+	if err := json.Unmarshal([]byte(`"`+strings.ReplaceAll(xmlContent, `"`, `\"`)+`"`), &unescapedXML); err != nil {
+		log.Printf("Error unescaping XML content: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Invalid XML content",
+		})
+	}
+
+	fmt.Println("Unescaped XML content:", unescapedXML)
+
+	segmentRegex := regexp.MustCompile(`<segment number="(\d+)">\s*([\s\S]*?)\s*</segment>`)
+	matches := segmentRegex.FindAllStringSubmatch(unescapedXML, -1)
+	if matches == nil {
+		log.Printf("No segments found in Groq response")
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Invalid Groq response",
+		})
+	}
+
+	for _, match := range matches {
+		if len(match) < 3 {
+			log.Printf("Unexpected match format: %v", match)
+			continue
+		}
+		segNumberStr := match[1]
+		segNumber, err := strconv.Atoi(segNumberStr) // Convert segment number to int
+		if err != nil {
+			log.Printf("Invalid segment number: %v", err)
+			continue
+		}
+		segContent := match[2]
+		segmentContent := strings.TrimSpace(segContent)
 		if segmentContent == "" {
 			continue
 		}
@@ -117,6 +188,7 @@ func CreateStory(c *fiber.Ctx) error {
 		segment := models.Segment{
 			StoryID: int(story.ID),
 			Segment: segmentContent,
+			Number:  segNumber, // Now assigns an int value
 		}
 
 		if err := database.DB.Create(&segment).Error; err != nil {
@@ -124,11 +196,12 @@ func CreateStory(c *fiber.Ctx) error {
 			continue
 		}
 
-		fmt.Println("Segment content for story:", story.ID, "segment:", seg.Number, "content:", segmentContent)
+		fmt.Println("Segment content for story:", story.ID, "segment:", segNumber, "content:", segmentContent)
 
 		// **Generate Image for Segment Starts Here**
 
 		// Prepare Replicate API request payload
+
 		replicatePayload := map[string]interface{}{
 			"input": map[string]interface{}{
 				"prompt":         fmt.Sprintf("%s, tasty, food photography, dynamic shot", segmentContent),
@@ -178,7 +251,7 @@ func CreateStory(c *fiber.Ctx) error {
 		}
 
 		if len(replicateResp.Output) == 0 {
-			log.Printf("No output from Replicate for segment %s", seg.Number)
+			log.Printf("No output from Replicate for segment %s", segNumber)
 			continue
 		}
 
@@ -201,7 +274,7 @@ func CreateStory(c *fiber.Ctx) error {
 		}
 
 		// Define the object key for R2
-		objectKey := fmt.Sprintf("images/story_%d_segment_%s.webp", story.ID, seg.Number)
+		objectKey := fmt.Sprintf("images/story_%d_segment_%d.webp", story.ID, segNumber)
 
 		// Upload to R2
 		_, err = middleware.R2Client.PutObject(context.TODO(), &s3.PutObjectInput{
