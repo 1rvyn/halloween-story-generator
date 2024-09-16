@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv" // Add strconv for string to int conversion
 	"strings"
+	"time"
 
 	"github.com/1rvyn/halloween-story-generator/database"
 	"github.com/1rvyn/halloween-story-generator/middleware"
@@ -22,15 +23,6 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func unescapeUnicodeCharactersInJSON(s string) (string, error) {
-	var unescaped string
-	err := json.Unmarshal([]byte(`"`+strings.ReplaceAll(s, `"`, `\"`)+`"`), &unescaped)
-	if err != nil {
-		return "", err
-	}
-	return unescaped, nil
-}
-
 func CreateStory(c *fiber.Ctx) error {
 	story := new(models.Story)
 	if err := c.BodyParser(story); err != nil {
@@ -39,6 +31,10 @@ func CreateStory(c *fiber.Ctx) error {
 			"error": "Cannot parse JSON",
 		})
 	}
+
+	// insert and read id
+	database.DB.Create(story).Scan(&story)
+	fmt.Printf("Story ID: %d\n", story.ID)
 
 	userID, ok := c.Locals("user_id").(uint)
 	if !ok {
@@ -193,7 +189,7 @@ func CreateStory(c *fiber.Ctx) error {
 		// Prepare Replicate API request payload
 		replicatePayload := map[string]interface{}{
 			"input": map[string]interface{}{
-				"prompt":         fmt.Sprintf("%s, tasty, food photography, dynamic shot", segmentContent),
+				"prompt":         segmentContent,
 				"num_outputs":    1,
 				"aspect_ratio":   "1:1",
 				"output_format":  "webp",
@@ -224,29 +220,106 @@ func CreateStory(c *fiber.Ctx) error {
 		}
 		defer resp.Body.Close()
 
-		replicateRespBody, err := ioutil.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusCreated {
+			bodyBytes, _ := ioutil.ReadAll(resp.Body)
+			log.Printf("Replicate API error: %s", string(bodyBytes))
+			continue
+		}
+
+		replicateRespBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			log.Printf("Error reading Replicate response: %v", err)
 			continue
 		}
 
-		// Parse Replicate response to get image URL
+		// Parse Replicate response to get prediction URLs
 		var replicateResp struct {
 			Output []string `json:"output"`
+			Error  string   `json:"error"`
+			Status string   `json:"status"`
+			URLs   struct {
+				Get string `json:"get"`
+			} `json:"urls"`
 		}
 		if err := json.Unmarshal(replicateRespBody, &replicateResp); err != nil {
 			log.Printf("Error unmarshalling Replicate response: %v", err)
 			continue
 		}
 
+		if replicateResp.Status != "succeeded" && replicateResp.Status != "failed" {
+			// Poll the get URL until status is succeeded or failed
+			maxRetries := 20 // Increased from 10 to allow more time
+			retryInterval := 1 * time.Second
+			for i := 0; i < maxRetries; i++ {
+				time.Sleep(retryInterval)
+
+				req, err := http.NewRequest("GET", replicateResp.URLs.Get, nil)
+				if err != nil {
+					log.Printf("Error creating request for polling Replicate get URL: %v", err)
+					continue
+				}
+
+				req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("REPLICATE_API_TOKEN")))
+				req.Header.Set("Content-Type", "application/json")
+
+				client := &http.Client{}
+				getResp, err := client.Do(req)
+				if err != nil {
+					log.Printf("Error polling Replicate get URL: %v", err)
+					continue
+				}
+
+				getBody, err := io.ReadAll(getResp.Body)
+				getResp.Body.Close()
+				if err != nil {
+					log.Printf("Error reading Replicate poll response: %v", err)
+					continue
+				}
+
+				var pollResp struct {
+					Output []string `json:"output"`
+					Error  string   `json:"error"`
+					Status string   `json:"status"`
+				}
+				if err := json.Unmarshal(getBody, &pollResp); err != nil {
+					log.Printf("Error unmarshalling Replicate poll response: %v", err)
+					continue
+				}
+
+				log.Printf("Polling attempt %d: Status=%s", i+1, pollResp.Status)
+
+				if pollResp.Status == "succeeded" {
+					replicateResp.Output = pollResp.Output
+					break
+				} else if pollResp.Status == "failed" {
+					replicateResp.Error = pollResp.Error
+					break
+				}
+				// Continue polling if status is still pending or starting
+			}
+		}
+
+		// **Update Condition to Check Output Instead of URLs.Get**
 		if len(replicateResp.Output) == 0 {
-			log.Printf("No output from Replicate for segment %s", segNumber)
+			if replicateResp.Error != "" {
+				log.Printf("Replicate API error for segment %d: %s", segNumber, replicateResp.Error)
+			} else {
+				log.Printf("No output from Replicate for segment %d", segNumber)
+			}
 			continue
 		}
 
 		imageURL := replicateResp.Output[0]
 
 		// **Download Image from Replicate and Upload to R2 Starts Here**
+
+		// Ensure R2Client is initialized
+		if middleware.R2Client == nil {
+			log.Println("R2Client is not initialized")
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Internal Server Error",
+			})
+		}
 
 		// Download the image
 		imageResp, err := http.Get(imageURL)
@@ -256,7 +329,7 @@ func CreateStory(c *fiber.Ctx) error {
 		}
 		defer imageResp.Body.Close()
 
-		imageData, err := ioutil.ReadAll(imageResp.Body)
+		imageData, err := io.ReadAll(imageResp.Body)
 		if err != nil {
 			log.Printf("Error reading image data: %v", err)
 			continue
@@ -267,7 +340,7 @@ func CreateStory(c *fiber.Ctx) error {
 
 		// Upload to R2
 		_, err = middleware.R2Client.PutObject(context.TODO(), &s3.PutObjectInput{
-			Bucket:      aws.String("halloween"), // Replace with your bucket name if different
+			Bucket:      aws.String("halloween"), // Ensure this matches your R2 bucket name
 			Key:         aws.String(objectKey),
 			Body:        bytes.NewReader(imageData),
 			ContentType: aws.String("image/webp"),

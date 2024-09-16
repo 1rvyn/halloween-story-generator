@@ -43,22 +43,24 @@ func init() {
 
 	// Initialize session store
 	store = session.New()
-	routes.SetStore(store)            // Set the session store in routes
-	middleware.SetSessionStore(store) // Set the session store in middleware
+	routes.SetStore(store)            // Set the session store routes
+	middleware.SetSessionStore(store) // Set the session store middleware
 }
 
 func main() {
 	// Initialize database
-	fmt.Printf("Auth0 Domain: %s, Auth0 Audience: %s\n", auth0Domain, auth0Audience)
-
 	if err := database.Connect(); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
 	// Initialize JWKS
-	err := middleware.InitializeJWKS(auth0Domain)
-	if err != nil {
+	if err := middleware.InitializeJWKS(os.Getenv("AUTH0_DOMAIN")); err != nil {
 		log.Fatalf("Failed to initialize JWKS: %v", err)
+	}
+
+	// Initialize R2
+	if err := middleware.InitializeR2(); err != nil {
+		log.Fatalf("Failed to initialize R2: %v", err)
 	}
 
 	// Create a new Fiber instance

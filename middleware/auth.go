@@ -10,8 +10,8 @@ import (
 	"github.com/1rvyn/halloween-story-generator/database"
 	"github.com/1rvyn/halloween-story-generator/models"
 	"github.com/MicahParks/keyfunc"
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v4"
@@ -42,16 +42,27 @@ func InitializeJWKS(auth0Domain string) error {
 
 // InitializeR2 initializes the Cloudflare R2 client
 func InitializeR2() error {
+	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
+	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	if accessKey == "" || secretKey == "" {
+		return fmt.Errorf("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set")
+	}
+
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion("auto"),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			accessKey,
+			secretKey,
+			"",
+		)),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
 	R2Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(os.Getenv("R2_DEV_ENDPOINT"))
-		o.Region = "auto"
+		o.EndpointResolver = s3.EndpointResolverFromURL(os.Getenv("R2_DEV_ENDPOINT"))
+		o.Region = "auto" // Ensure region is set to "auto" for Cloudflare R2
 		o.UsePathStyle = true
 	})
 
