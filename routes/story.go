@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -169,17 +170,16 @@ func CreateStory(c *fiber.Ctx) error {
 		})
 	}
 
-	userID, ok := c.Locals("user_id").(uint)
-	if !ok {
-		log.Printf("User ID not found in locals")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Internal Server Error",
+	// Retrieve the authenticated user from JWT
+	user, ok := c.Locals("user").(*models.User)
+	if !ok || user == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Unauthorized",
 		})
 	}
-
-	story.CreatedBy = int(userID)
+	story.CreatedBy = int(user.ID)
 	database.DB.Create(story).Scan(&story)
-	fmt.Printf("Story ID: %d\n", story.ID)
+	fmt.Printf("Just created story ID: %d\n", story.ID)
 
 	// created story
 	xmlContent, err := groqReuest(*story)
@@ -198,7 +198,7 @@ func CreateStory(c *fiber.Ctx) error {
 		})
 	}
 
-	fmt.Printf("Parsed %v segments:", len(segments))
+	fmt.Printf("Parsed %v total segments:", len(segments))
 
 	for _, segment := range segments {
 		err := processSegment(segment, int(story.ID))
@@ -208,7 +208,90 @@ func CreateStory(c *fiber.Ctx) error {
 		}
 	}
 
-	log.Printf("Story created with ID: %d", story.ID)
+	// Generate ffmpeg input file with durations
+	inputFilePath := fmt.Sprintf("temp/story_%d_input.txt", story.ID)
+	inputFile, err := os.Create(inputFilePath)
+	if err != nil {
+		log.Printf("Error creating ffmpeg input file: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Video creation failed",
+		})
+	}
+	defer inputFile.Close()
+
+	for _, segment := range segments {
+		inputFile.WriteString(fmt.Sprintf("file '%s'\n", segment.ImageURL))
+		inputFile.WriteString(fmt.Sprintf("duration %.2f\n", segment.Duration))
+	}
+
+	// Specify the last image without duration
+	if len(segments) > 0 {
+		lastSegment := segments[len(segments)-1]
+		inputFile.WriteString(fmt.Sprintf("file '%s'\n", lastSegment.ImageURL))
+	}
+
+	// Create video using ffmpeg with dynamic durations
+	videoPath := fmt.Sprintf("temp/story_%d_video.mp4", story.ID)
+	ffmpegCmd := exec.Command("ffmpeg",
+		"-f", "concat",
+		"-safe", "0",
+		"-i", inputFilePath,
+		"-c:v", "libx264",
+		"-r", "30",
+		"-pix_fmt", "yuv420p",
+		videoPath,
+	)
+
+	// Capture stdout and stderr
+	var stderr bytes.Buffer
+	ffmpegCmd.Stderr = &stderr
+
+	if err := ffmpegCmd.Run(); err != nil {
+		log.Printf("FFmpeg error: %v, Details: %s", err, stderr.String())
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Video creation failed",
+		})
+	}
+
+	// Upload video to R2
+	videoFile, err := os.Open(videoPath)
+	if err != nil {
+		log.Printf("Error opening video file: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Internal Server Error",
+		})
+	}
+	defer videoFile.Close()
+
+	objectKey := fmt.Sprintf("videos/story_%d.mp4", story.ID)
+	_, err = middleware.R2Client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket:      aws.String("halloween"),
+		Key:         aws.String(objectKey),
+		Body:        videoFile,
+		ContentType: aws.String("video/mp4"),
+	})
+	if err != nil {
+		log.Printf("Error uploading video to R2: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Video upload failed",
+		})
+	}
+
+	r2VideoURL := fmt.Sprintf("%s/%s", os.Getenv("R2_S3_API"), objectKey)
+	story.VideoURL = r2VideoURL
+
+	if err := database.DB.Save(&story).Error; err != nil {
+		log.Printf("Error updating story with VideoURL: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Internal Server Error",
+		})
+	}
+
+	// Clean up temporary files
+	os.Remove(inputFilePath)
+	os.Remove(videoPath)
+
+	log.Printf("Story created with ID: %d and video URL: %s", story.ID, r2VideoURL)
 	return c.Status(fiber.StatusCreated).JSON(story)
 }
 
@@ -351,32 +434,39 @@ func processSegment(segment models.Segment, storyID int) error {
 	r2ImageURL := fmt.Sprintf("%s/%s", os.Getenv("R2_S3_API"), objectKey)
 	segment.ImageURL = r2ImageURL
 
+	// Calculate duration based on text length
+	wordCount := len(strings.Fields(segment.Segment))
+	wordsPerSecond := 2.5 // Average speaking rate
+	duration := float64(wordCount) / wordsPerSecond
+	segment.Duration = duration
+
 	if err := database.DB.Save(&segment).Error; err != nil {
-		return fmt.Errorf("updating segment with ImageURL: %w", err)
+		return fmt.Errorf("updating segment with ImageURL and Duration: %w", err)
 	}
 
 	return nil
 }
 
 func GetStories(c *fiber.Ctx) error {
-	userID, ok := c.Locals("user_id").(uint)
-	if !ok {
-		log.Printf("User ID not found in locals")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Internal Server Error",
+	// Retrieve the authenticated user from JWT
+	user, ok := c.Locals("user").(*models.User)
+	if !ok || user == nil {
+		log.Printf("User not found in locals")
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Unauthorized",
 		})
 	}
 
-	fmt.Println("User ID reading stories:", userID)
+	fmt.Println("User ID reading stories:", user.ID)
 
 	var stories []models.Story
-	if err := database.DB.Find(&stories).Error; err != nil {
+	if err := database.DB.Where("created_by = ?", user.ID).Find(&stories).Error; err != nil {
 		log.Printf("Error fetching stories: %v", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Internal Server Error",
 		})
 	}
 
-	log.Printf("Fetched %d stories", len(stories))
+	log.Printf("Fetched %d stories for user ID %d", len(stories), user.ID)
 	return c.JSON(stories)
 }

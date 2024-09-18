@@ -12,4 +12,5 @@ type Story struct {
 	CreatedBy int       `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 	Response  string    `json:"response" gorm:"text"` // New field to store API response
+	VideoURL  string    `json:"url"`
 }
