@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/1rvyn/halloween-story-generator/database"
@@ -10,17 +9,7 @@ import (
 )
 
 func Dashboard(c *fiber.Ctx) error {
-	// Retrieve session
-	sess, err := store.Get(c)
-	if err != nil {
-		log.Printf("Error retrieving session: %v", err)
-		return c.Status(fiber.StatusInternalServerError).SendString("Internal Server Error")
-	}
-
-	fmt.Println(sess.Get("user_id"))
-
-	// Get user ID from session
-	userID, ok := sess.Get("user_id").(uint)
+	userID, ok := c.Locals("user_id").(uint) // Adjust the type based on your User model
 	if !ok {
 		return c.Status(fiber.StatusUnauthorized).SendString("Unauthorized")
 	}

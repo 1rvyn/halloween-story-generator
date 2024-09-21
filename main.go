@@ -9,7 +9,6 @@ import (
 	"github.com/1rvyn/halloween-story-generator/middleware"
 	"github.com/1rvyn/halloween-story-generator/routes"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/session"
 	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
 )
@@ -20,7 +19,6 @@ var (
 	auth0ClientID     string
 	auth0ClientSecret string
 	auth0CallbackURL  string
-	store             *session.Store
 )
 
 func init() {
@@ -41,10 +39,10 @@ func init() {
 	fmt.Printf("Auth0 Domain: %s, Auth0 Audience: %s, Callback URL: %s\n",
 		auth0Domain, auth0Audience, auth0CallbackURL)
 
-	// Initialize session store
-	store = session.New()
-	routes.SetStore(store)            // Set the session store routes
-	middleware.SetSessionStore(store) // Set the session store middleware
+	// Remove session store initialization
+	// store = session.New()
+	// routes.SetStore(store)            // Remove session store from routes
+	// middleware.SetSessionStore(store) // Remove session store from middleware
 }
 
 func main() {
@@ -85,12 +83,12 @@ func setupRoutes(app *fiber.App) {
 	app.Get("/callback", routes.Callback)
 
 	// Protected API routes
-	api := app.Group("/api", middleware.AuthRequired())
+	api := app.Group("/api", middleware.AuthRequired()) // Use JWT middleware
 	api.Post("/story", routes.CreateStory)
 	api.Get("/stories", routes.GetStories)
 
 	// Protected web routes
-	protected := app.Group("/", middleware.SessionAuthRequired())
+	protected := app.Group("/", middleware.AuthRequired()) // Use JWT middleware
 	protected.Get("/dashboard", routes.Dashboard)
 	protected.Get("/story", routes.ViewStory) // Define the GET /story route
 }

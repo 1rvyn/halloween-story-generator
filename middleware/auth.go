@@ -80,19 +80,18 @@ func AuthRequired() fiber.Handler {
 			})
 		}
 
-		// Get the token from the Authorization header
+		// Get the token from the Authorization header or cookie
 		authHeader := c.Get("Authorization")
-		if authHeader == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "Missing Authorization header",
-			})
+		tokenString := ""
+		if authHeader != "" {
+			fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
+		} else {
+			tokenString = c.Cookies("jwt") // Extract JWT from cookie
 		}
 
-		tokenString := ""
-		fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
 		if tokenString == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "Invalid Authorization header format",
+				"error": "Missing token",
 			})
 		}
 

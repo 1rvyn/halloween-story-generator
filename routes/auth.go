@@ -15,7 +15,6 @@ import (
 	"github.com/1rvyn/halloween-story-generator/database"
 	"github.com/1rvyn/halloween-story-generator/models"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/session"
 	"golang.org/x/oauth2"
 )
 
@@ -177,34 +176,18 @@ func Callback(c *fiber.Ctx) error {
 		Name:     "jwt",
 		Value:    token.AccessToken,
 		Expires:  time.Now().Add(time.Hour * 24),
-		HTTPOnly: false, // Allow JavaScript to access the cookie
+		HTTPOnly: true, // Enhance security by making the cookie HTTPOnly
 	})
 
-	// Store user ID in session instead of full user info
-	sess, err := store.Get(c)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).SendString("Error getting session")
-	}
-
-	sess.Set("user_id", user.ID)
-	if err := sess.Save(); err != nil {
-		return c.Status(fiber.StatusInternalServerError).SendString("Error saving session")
-	}
-
 	// Redirect to the correct dashboard route
-	return c.Redirect("/dashboard") // Now correctly protected by session
+	return c.Redirect("/dashboard") // Now correctly protected by JWT
 }
 
 // ViewStory handles the GET /story route
 func ViewStory(c *fiber.Ctx) error {
+	fmt.Println("c.locals contents: ", c.Locals("user_id"))
 	// Implement logic to display the story
 	return c.Render("story", fiber.Map{
 		"Title": "Write Your Story",
 	})
-}
-
-var store *session.Store
-
-func SetStore(s *session.Store) {
-	store = s
 }
