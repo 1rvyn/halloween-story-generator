@@ -22,8 +22,11 @@ var (
 )
 
 func init() {
-	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: Error loading .env file: %v", err)
+	// Load .env file only in development
+	if os.Getenv("GO_ENV") != "production" {
+		if err := godotenv.Load(); err != nil {
+			log.Printf("Warning: Error loading .env file: %v", err)
+		}
 	}
 
 	auth0Domain = os.Getenv("AUTH0_DOMAIN")
