@@ -1,3 +1,4 @@
+# Build stage
 FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
@@ -6,16 +7,27 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux go build -o main .
 
+RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+
+# Run stage
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates fuse3 sqlite
+WORKDIR /app
 
-COPY --from=flyio/litefs:0.5 /usr/local/bin/litefs /usr/local/bin/litefs
-COPY --from=builder /app/main /app/main
+# Install ffmpeg (includes ffprobe)
+RUN apk add --no-cache ffmpeg
 
-COPY litefs.yml /etc/litefs.yml
-COPY litefs.local.yml /etc/litefs.local.yml
+COPY --from=builder /app/main .
 
-CMD ["sh", "-c", "if [ \"$FLY_REGION\" = \"local\" ]; then litefs mount -config /etc/litefs.local.yml; else litefs mount; fi"]
+# Expose the port your app listens on
+EXPOSE 8080
+
+# Set environment variables (optional if set in Railway)
+ENV AUTH0_DOMAIN=${AUTH0_DOMAIN}
+ENV AUTH0_AUDIENCE=${AUTH0_AUDIENCE}
+ENV AUTH0_CLIENT_ID=${AUTH0_CLIENT_ID}
+ENV AUTH0_CLIENT_SECRET=${AUTH0_CLIENT_SECRET}
+ENV AUTH0_CALLBACK_URL=${AUTH0_CALLBACK_URL}
+
+CMD ["./main"]

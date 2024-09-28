@@ -80,13 +80,13 @@ func AuthRequired() fiber.Handler {
 			})
 		}
 
-		// Get the token from the Authorization header or cookie
-		authHeader := c.Get("Authorization")
-		tokenString := ""
-		if authHeader != "" {
-			fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
-		} else {
-			tokenString = c.Cookies("jwt") // Extract JWT from cookie
+		// Prefer the token from the cookie over the Authorization header
+		tokenString := c.Cookies("jwt")
+		if tokenString == "" {
+			authHeader := c.Get("Authorization")
+			if authHeader != "" {
+				fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
+			}
 		}
 
 		if tokenString == "" {
@@ -97,6 +97,7 @@ func AuthRequired() fiber.Handler {
 
 		// Parse and validate the token
 		token, err := jwt.Parse(tokenString, jwks.Keyfunc)
+		fmt.Println(token)
 		if err != nil || !token.Valid {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "Invalid token",
@@ -148,7 +149,7 @@ func AuthRequired() fiber.Handler {
 
 		// Set 'user_id' in locals for route handlers to access
 		c.Locals("user_id", user.ID)
-
+		fmt.Println("User ID we just added to locals:", user.ID)
 		// **New Code Ends Here**
 
 		// Store user information in context

@@ -76,19 +76,20 @@ func setupRoutes(app *fiber.App) {
 	// Public routes
 	app.Get("/home", routes.Home)
 	app.Get("/signup", routes.SignupPage)
-	app.Post("/signup", routes.Signup)
 
-	// Google login routes
+	app.Post("/signup", routes.Signup)
 	app.Get("/login/google", routes.LoginWithGoogle)
 	app.Get("/callback", routes.Callback)
 
+	// app routes (using JWT middleware)
+	protected := app.Group("/", middleware.AuthRequired())
+
 	// Protected API routes
-	api := app.Group("/api", middleware.AuthRequired()) // Use JWT middleware
+	api := protected.Group("/api")
 	api.Post("/story", routes.CreateStory)
 	api.Get("/stories", routes.GetStories)
 
-	// Protected web routes
-	protected := app.Group("/", middleware.AuthRequired()) // Use JWT middleware
+	// Protected web route
 	protected.Get("/dashboard", routes.Dashboard)
-	protected.Get("/story", routes.ViewStory) // Define the GET /story route
+	protected.Get("/story", routes.ViewStory)
 }

@@ -1,3 +1,5 @@
 README.md
 .env
 tmp/
+*.mp3
+.DS_Store

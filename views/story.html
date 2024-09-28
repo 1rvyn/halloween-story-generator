@@ -17,6 +17,9 @@
             <textarea id="storyContent" placeholder="Write your story here..."></textarea>
             <button type="submit">Submit</button>
         </form>
+        {{if .videoURL}}
+        <video id="storyVideo" width="320" height="240" controls src="{{.videoURL}}"></video>
+        {{end}}
     </div>
 
     <script>
@@ -45,6 +48,23 @@
                 } else {
                     alert('Story submitted successfully!');
                     document.getElementById('storyContent').value = '';
+                    
+                    // Add this block to create and display the video player
+                    if (data.videoURL) {
+                        const videoPlayer = document.createElement('video');
+                        videoPlayer.id = 'storyVideo';
+                        videoPlayer.width = 320;
+                        videoPlayer.height = 240;
+                        videoPlayer.controls = true;
+                        videoPlayer.src = data.videoURL;
+                        
+                        const container = document.querySelector('.container');
+                        const existingVideo = document.getElementById('storyVideo');
+                        if (existingVideo) {
+                            container.removeChild(existingVideo);
+                        }
+                        container.appendChild(videoPlayer);
+                    }
                 }
             })
             .catch(error => {
