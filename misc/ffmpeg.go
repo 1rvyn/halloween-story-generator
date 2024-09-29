@@ -66,12 +66,18 @@ func GenerateFfmpegInputFile(storyID int, segments []models.Segment) (string, er
 	// Channel to capture errors from goroutines
 	errChan := make(chan error, len(story.Segments))
 
+	// Limit the number of concurrent FFmpeg processes
+	const maxConcurrent = 2
+	sem := make(chan struct{}, maxConcurrent)
+
 	for idx, segment := range story.Segments {
 		idx := idx         // capture loop variable
 		segment := segment // capture loop variable
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			sem <- struct{}{}        // acquire semaphore
+			defer func() { <-sem }() // release semaphore
 
 			// Download image from ImageURL
 			imageURL := segment.Segment.ImageURL
