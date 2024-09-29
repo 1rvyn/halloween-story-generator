@@ -300,11 +300,16 @@ func getTTS(text string, idx int, tempDir string) (string, float64, error) {
 	}
 
 	url := "https://api.openai.com/v1/audio/speech"
+
+	// Escape special characters in the text
+	escapedText := strings.ReplaceAll(text, "\"", "\\\"")
+	escapedText = strings.ReplaceAll(escapedText, "\n", "\\n")
+
 	payload := fmt.Sprintf(`{
 		"model": "tts-1",
 		"input": "%s",
 		"voice": "onyx"
-	}`, text)
+	}`, escapedText)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(payload)))
 	if err != nil {
