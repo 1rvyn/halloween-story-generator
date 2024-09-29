@@ -177,6 +177,8 @@ func Callback(c *fiber.Ctx) error {
 		Value:    token.AccessToken,
 		Expires:  time.Now().Add(time.Hour * 24),
 		HTTPOnly: true,
+		SameSite: "Lax",
+		Secure:   true,
 	})
 
 	// Redirect to the correct dashboard route

@@ -74,8 +74,8 @@ func main() {
 	log.Println("Server starting on :8080")
 	log.Fatal(app.Listen(":8080"))
 }
-
 func setupRoutes(app *fiber.App) {
+
 	// Public routes
 	app.Get("/home", routes.Home)
 	app.Get("/signup", routes.SignupPage)
