@@ -176,7 +176,7 @@ func Callback(c *fiber.Ctx) error {
 		Name:     "jwt",
 		Value:    token.AccessToken,
 		Expires:  time.Now().Add(time.Hour * 24),
-		HTTPOnly: true, // Enhance security by making the cookie HTTPOnly
+		HTTPOnly: true,
 	})
 
 	// Redirect to the correct dashboard route
