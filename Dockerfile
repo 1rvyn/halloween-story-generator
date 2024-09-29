@@ -31,3 +31,6 @@ EXPOSE 8080
 # ENV AUTH0_CALLBACK_URL=${AUTH0_CALLBACK_URL}
 
 CMD ["./main"]
+
+# Ensure the views directory is included in the Docker image
+COPY ./views ./views
