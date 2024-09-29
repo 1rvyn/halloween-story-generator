@@ -21,37 +21,17 @@
         <video id="storyVideo" width="320" height="240" controls src="{{.videoURL}}"></video>
         {{end}}
     </div>
-
     <script>
-        // Function to get a cookie by name
-        function getCookie(name) {
-            let value = "; " + document.cookie;
-            let parts = value.split("; " + name + "=");
-            if (parts.length == 2) return parts.pop().split(";").shift();
-        }
-
-        // Store the JWT token in localStorage
-        const jwtToken = getCookie('jwt');
-        if (jwtToken) {
-            localStorage.setItem('jwt', jwtToken);
-        }
-
         document.getElementById('storyForm').addEventListener('submit', function(event) {
             event.preventDefault();
             const content = document.getElementById('storyContent').value;
-            const token = localStorage.getItem('jwt'); // Retrieve the JWT token from localStorage
-
-            if (!token) {
-                alert('No token found. Please log in.');
-                return;
-            }
 
             fetch('/api/story', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + token // Send the JWT token in the Authorization header
                 },
+                credentials: 'include', // This will include cookies in the request
                 body: JSON.stringify({ content: content })
             })
             .then(response => response.json())
