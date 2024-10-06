@@ -7,14 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/1rvyn/halloween-story-generator/database"
@@ -23,6 +22,7 @@ import (
 	"github.com/1rvyn/halloween-story-generator/models"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -83,7 +83,6 @@ func groqReuest(story models.Story) (string, error) {
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("GROQ_API_KEY")))
 	req.Header.Set("Content-Type", "application/json")
-	// **Edit Ends Here**
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -99,7 +98,7 @@ func groqReuest(story models.Story) (string, error) {
 		return "", err
 	}
 
-	log.Printf("Response body: %s", body)
+	log.Printf("Groq Response body: \n%s\n", body)
 
 	var apiResp GroqAPIResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
@@ -200,12 +199,12 @@ func CreateStory(c *fiber.Ctx) error {
 		})
 	}
 
-	for idx := range segments {
-		err := replicateRequest(&segments[idx], int(story.ID)) // Pass by reference
-		if err != nil {
-			log.Printf("Error processing segment %d: %v", segments[idx].Number, err)
-			continue
-		}
+	err = replicateRequests(segments, int(story.ID))
+	if err != nil {
+		log.Printf("Error processing segments: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Internal Server Error",
+		})
 	}
 
 	// Generate video using the segments
@@ -217,179 +216,238 @@ func CreateStory(c *fiber.Ctx) error {
 		})
 	}
 
-	// cleanup the temp files
-	tempDir := filepath.Join(".", "temp")
-	for idx := range segments {
-		fmt.Printf("Deleting temp files for segment: %d\n", idx+1)
-		segmentVideoPath := filepath.Join(tempDir, fmt.Sprintf("segment_%d.mp4", idx+1))
-		segmentImagePath := filepath.Join(tempDir, fmt.Sprintf("segment_%d.webp", idx+1))
-		segmentAudioPath := filepath.Join(tempDir, fmt.Sprintf("speech_%d.mp3", idx+1))
+	// Upload video to R2
+	now := time.Now()
+	videoFile, err := os.Open(videoFilePath)
+	elapsed := time.Since(now)
+	if err != nil {
+		log.Printf("Error opening video file (took %v): %v", elapsed, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to open video file",
+		})
+	}
+	defer videoFile.Close()
+	log.Printf("Opening video file took: %v", elapsed)
 
-		fmt.Printf("Deleting file: %s\n", segmentVideoPath)
-		if err := os.Remove(segmentVideoPath); err != nil {
-			fmt.Printf("Error deleting %s: %v\n", segmentVideoPath, err)
-		}
+	if middleware.R2Client == nil {
+		log.Printf("R2 client is not initialized")
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Internal Server Error",
+		})
+	}
 
-		fmt.Printf("Deleting file: %s\n", segmentImagePath)
-		if err := os.Remove(segmentImagePath); err != nil {
-			fmt.Printf("Error deleting %s: %v\n", segmentImagePath, err)
-		}
+	objectKey := fmt.Sprintf("videos/story_%d_video.mp4", story.ID)
+	_, err = middleware.R2Client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket:      aws.String("halloween"),
+		Key:         aws.String(objectKey),
+		Body:        videoFile,
+		ContentType: aws.String("video/mp4"),
+	})
+	if err != nil {
+		log.Printf("Error uploading video to R2: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to upload video",
+		})
+	}
 
-		fmt.Printf("Deleting file: %s\n", segmentAudioPath)
-		if err := os.Remove(segmentAudioPath); err != nil {
-			fmt.Printf("Error deleting %s: %v\n", segmentAudioPath, err)
-		}
+	r2VideoURL := fmt.Sprintf("%s/%s", os.Getenv("R2_S3_API"), objectKey)
+
+	// Update the story with the video URL
+	if err := database.DB.Model(&models.Story{}).Where("id = ?", story.ID).Update("video_url", r2VideoURL).Error; err != nil {
+		log.Printf("Error updating story with VideoURL: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to update story with video URL",
+		})
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"videoURL": videoFilePath,
+		"videoURL": r2VideoURL,
 	})
 }
 
-// new function to handle replicate requests and image processing
-func replicateRequest(segment *models.Segment, storyID int) error {
-	replicatePayload := map[string]interface{}{
-		"input": map[string]interface{}{
-			"prompt":         segment.Segment, // Changed from segment.Commentation to segment.Segment
-			"num_outputs":    1,
-			"aspect_ratio":   "16:9",
-			"output_format":  "webp",
-			"output_quality": 20,
-		},
-	}
+func replicateRequests(segments []models.Segment, storyID int) error {
+	var wg sync.WaitGroup
+	var mutex sync.Mutex
+	errChan := make(chan error, len(segments))
 
-	replicateBody, err := json.Marshal(replicatePayload)
-	if err != nil {
-		return fmt.Errorf("marshalling Replicate request: %w", err)
-	}
+	for i := range segments {
+		wg.Add(1)
+		go func(seg *models.Segment) {
+			defer wg.Done()
+			log.Printf("Starting processing for segment %d", seg.Number)
+			// Prepare the payload for Replicate API
+			replicatePayload := map[string]interface{}{
+				"input": map[string]interface{}{
+					"prompt":         seg.Segment,
+					"num_outputs":    1,
+					"aspect_ratio":   "16:9",
+					"output_format":  "webp",
+					"output_quality": 20,
+				},
+			}
 
-	req, err := http.NewRequest("POST", "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions", bytes.NewBuffer(replicateBody))
-	if err != nil {
-		return fmt.Errorf("creating Replicate request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("REPLICATE_API_TOKEN")))
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("making Replicate request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		bodyBytes, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("replicate api error: %s", string(bodyBytes))
-	}
-
-	replicateRespBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("reading Replicate response: %w", err)
-	}
-
-	// parse replicate response to get prediction URLs
-
-	if err := json.Unmarshal(replicateRespBody, &replicateResp); err != nil {
-		return fmt.Errorf("unmarshalling Replicate response: %w", err)
-	}
-
-	if replicateResp.Status != "succeeded" && replicateResp.Status != "failed" {
-		// Poll the get URL until status is succeeded or failed
-		maxRetries := 20
-		retryInterval := 1 * time.Second
-		for i := 0; i < maxRetries; i++ {
-			time.Sleep(retryInterval)
-
-			req, err := http.NewRequest("GET", replicateResp.URLs.Get, nil)
+			replicateBody, err := json.Marshal(replicatePayload)
 			if err != nil {
-				log.Printf("Error creating poll request: %v", err)
-				continue
+				errChan <- fmt.Errorf("marshalling Replicate request: %w", err)
+				return
+			}
+
+			req, err := http.NewRequest("POST", "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions", bytes.NewBuffer(replicateBody))
+			if err != nil {
+				errChan <- fmt.Errorf("creating Replicate request: %w", err)
+				return
 			}
 
 			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("REPLICATE_API_TOKEN")))
 			req.Header.Set("Content-Type", "application/json")
 
-			getResp, err := client.Do(req)
+			client := &http.Client{}
+			resp, err := client.Do(req)
 			if err != nil {
-				log.Printf("Error polling Replicate URL: %v", err)
-				continue
+				errChan <- fmt.Errorf("making Replicate request: %w", err)
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusCreated {
+				bodyBytes, _ := io.ReadAll(resp.Body)
+				errChan <- fmt.Errorf("replicate API error: %s", string(bodyBytes))
+				return
 			}
 
-			getBody, err := io.ReadAll(getResp.Body)
-			getResp.Body.Close()
+			replicateRespBody, err := io.ReadAll(resp.Body)
 			if err != nil {
-				log.Printf("Error reading poll response: %v", err)
-				continue
+				errChan <- fmt.Errorf("reading Replicate response: %w", err)
+				return
 			}
 
 			var pollResp struct {
 				Output []string `json:"output"`
 				Error  string   `json:"error"`
 				Status string   `json:"status"`
+				URLs   struct { // Correctly nested URLs object
+					Get string `json:"get"`
+				} `json:"urls"`
 			}
-			if err := json.Unmarshal(getBody, &pollResp); err != nil {
-				log.Printf("Error unmarshalling poll response: %v", err)
-				continue
+			if err := json.Unmarshal(replicateRespBody, &pollResp); err != nil {
+				errChan <- fmt.Errorf("unmarshalling Replicate response: %w", err)
+				return
 			}
 
-			log.Printf("Polling attempt %d: Status=%s", i+1, pollResp.Status)
-
-			if pollResp.Status == "succeeded" {
-				replicateResp.Output = pollResp.Output
-				break
-			} else if pollResp.Status == "failed" {
-				replicateResp.Error = pollResp.Error
-				break
+			// Use the URL from the initial response for polling
+			pollingURL := pollResp.URLs.Get
+			if pollingURL == "" {
+				errChan <- fmt.Errorf("no polling URL provided in the initial response")
+				return
 			}
+
+			// Polling until the prediction is succeeded or failed
+			for pollResp.Status != "succeeded" && pollResp.Status != "failed" {
+				time.Sleep(1 * time.Second)
+
+				getReq, err := http.NewRequest("GET", pollingURL, nil)
+				if err != nil {
+					errChan <- fmt.Errorf("creating poll request: %w", err)
+					return
+				}
+
+				getReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("REPLICATE_API_TOKEN")))
+				getReq.Header.Set("Content-Type", "application/json")
+
+				getResp, err := client.Do(getReq)
+				if err != nil {
+					errChan <- fmt.Errorf("polling Replicate URL: %w", err)
+					return
+				}
+
+				getBody, err := io.ReadAll(getResp.Body)
+				getResp.Body.Close()
+				if err != nil {
+					errChan <- fmt.Errorf("reading poll response: %w", err)
+					return
+				}
+
+				if err := json.Unmarshal(getBody, &pollResp); err != nil {
+					errChan <- fmt.Errorf("unmarshalling poll response: %w", err)
+					return
+				}
+
+				log.Printf("Polling for segment %d: Status=%s", seg.Number, pollResp.Status)
+			}
+
+			if pollResp.Status != "succeeded" {
+				errChan <- fmt.Errorf("replicate API failed for segment %d: %s", seg.Number, pollResp.Error)
+				return
+			}
+
+			if len(pollResp.Output) == 0 {
+				errChan <- fmt.Errorf("no output from Replicate for segment %d", seg.Number)
+				return
+			}
+
+			imageURL := pollResp.Output[0]
+
+			// Download the image from Replicate
+			imageResp, err := http.Get(imageURL)
+			if err != nil {
+				errChan <- fmt.Errorf("downloading image for segment %d: %w", seg.Number, err)
+				return
+			}
+			defer imageResp.Body.Close()
+
+			imageData, err := io.ReadAll(imageResp.Body)
+			if err != nil {
+				errChan <- fmt.Errorf("reading image data for segment %d: %w", seg.Number, err)
+				return
+			}
+
+			// Upload the image to R2
+			objectKey := fmt.Sprintf("images/story_%d_segment_%d.webp", storyID, seg.Number)
+			_, err = middleware.R2Client.PutObject(context.TODO(), &s3.PutObjectInput{
+				Bucket:      aws.String("halloween"),
+				Key:         aws.String(objectKey),
+				Body:        bytes.NewReader(imageData),
+				ContentType: aws.String("image/webp"),
+			})
+			if err != nil {
+				errChan <- fmt.Errorf("uploading to R2 for segment %d: %w", seg.Number, err)
+				return
+			}
+
+			r2ImageURL := fmt.Sprintf("%s/%s", os.Getenv("R2_S3_API"), objectKey)
+
+			// Update the segment with the R2 Image URL
+			mutex.Lock()
+			seg.ImageURL = r2ImageURL
+			if err := database.DB.Save(seg).Error; err != nil {
+				mutex.Unlock()
+				errChan <- fmt.Errorf("updating segment %d with ImageURL: %w", seg.Number, err)
+				return
+			}
+			mutex.Unlock()
+
+			// Store image data in memory for ffmpeg processing
+			mutex.Lock()
+			seg.ImageData = imageData
+			mutex.Unlock()
+
+		}(&segments[i])
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	// Collect errors
+	var combinedErr error
+	for err := range errChan {
+		if combinedErr == nil {
+			combinedErr = err
+		} else {
+			combinedErr = fmt.Errorf("%v; %w", combinedErr, err)
 		}
 	}
 
-	if len(replicateResp.Output) == 0 {
-		if replicateResp.Error != "" {
-			return fmt.Errorf("replicate api error for segment %d: %s", segment.Number, replicateResp.Error)
-		}
-		return fmt.Errorf("no output from replicate for segment %d", segment.Number)
-	}
-
-	imageURL := replicateResp.Output[0]
-
-	// download image from replicate and upload to r2
-	if middleware.R2Client == nil {
-		return errors.New("r2 client is not initialized")
-	}
-
-	imageResp, err := http.Get(imageURL)
-	if err != nil {
-		return fmt.Errorf("downloading image: %w", err)
-	}
-	defer imageResp.Body.Close()
-
-	imageData, err := io.ReadAll(imageResp.Body)
-	if err != nil {
-		return fmt.Errorf("reading image data: %w", err)
-	}
-
-	objectKey := fmt.Sprintf("images/story_%d_segment_%d.webp", storyID, segment.Number)
-
-	_, err = middleware.R2Client.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket:      aws.String("halloween"),
-		Key:         aws.String(objectKey),
-		Body:        bytes.NewReader(imageData),
-		ContentType: aws.String("image/webp"),
-	})
-	if err != nil {
-		return fmt.Errorf("uploading to R2: %w", err)
-	}
-
-	r2ImageURL := fmt.Sprintf("%s/%s", os.Getenv("R2_S3_API"), objectKey)
-	segment.ImageURL = r2ImageURL
-
-	if err := database.DB.Save(segment).Error; err != nil {
-		return fmt.Errorf("updating segment with ImageURL and Duration: %w", err)
-	}
-
-	return nil
+	return combinedErr
 }
 
 func GetStories(c *fiber.Ctx) error {

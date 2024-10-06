@@ -3,5 +3,6 @@ README.md
 tmp/
 *.mp3
 .DS_Store
+.dockerignore
 # Ensure the views directory is not ignored
 # !/views/

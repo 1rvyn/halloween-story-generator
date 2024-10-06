@@ -41,11 +41,6 @@ func init() {
 
 	fmt.Printf("Auth0 Domain: %s, Auth0 Audience: %s, Callback URL: %s\n",
 		auth0Domain, auth0Audience, auth0CallbackURL)
-
-	// Remove session store initialization
-	// store = session.New()
-	// routes.SetStore(store)            // Remove session store from routes
-	// middleware.SetSessionStore(store) // Remove session store from middleware
 }
 
 func main() {
