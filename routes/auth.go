@@ -42,9 +42,9 @@ var (
 	oauthStateString = "random"
 )
 
-func SignupPage(c *fiber.Ctx) error {
-	return c.Render("signup", fiber.Map{})
-}
+// func SignupPage(c *fiber.Ctx) error {
+// 	return c.Render("signup", fiber.Map{})
+// }
 
 func Signup(c *fiber.Ctx) error {
 	var req SignupRequest
@@ -185,11 +185,11 @@ func Callback(c *fiber.Ctx) error {
 	return c.Redirect("/dashboard") // Now correctly protected by JWT
 }
 
-// ViewStory handles the GET /story route
-func ViewStory(c *fiber.Ctx) error {
-	fmt.Println("c.locals contents: ", c.Locals("user_id"))
-	// Implement logic to display the story
-	return c.Render("story", fiber.Map{
-		"Title": "Write Your Story",
-	})
-}
+// // ViewStory handles the GET /story route
+// func ViewStory(c *fiber.Ctx) error {
+// 	fmt.Println("c.locals contents: ", c.Locals("user_id"))
+// 	// Implement logic to display the story
+// 	return c.Render("story", fiber.Map{
+// 		"Title": "Write Your Story",
+// 	})
+// }

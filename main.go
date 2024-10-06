@@ -9,6 +9,7 @@ import (
 	"github.com/1rvyn/halloween-story-generator/middleware"
 	"github.com/1rvyn/halloween-story-generator/routes"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
 )
@@ -64,16 +65,24 @@ func main() {
 		Views: html.New("./views", ".html"),
 	})
 
+	// Enable CORS
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     "https://irvyn.dev",
+		AllowMethods:     "POST, GET, OPTIONS",
+		AllowHeaders:     "Content-Type",
+		AllowCredentials: true,
+	}))
+
 	setupRoutes(app)
 
 	log.Println("Server starting on :8080")
 	log.Fatal(app.Listen(":8080"))
 }
-func setupRoutes(app *fiber.App) {
 
+func setupRoutes(app *fiber.App) {
 	// Public routes
 	app.Get("/home", routes.Home)
-	app.Get("/signup", routes.SignupPage)
+	// app.Get("/signup", routes.SignupPage)
 
 	app.Post("/signup", routes.Signup)
 	app.Get("/login/google", routes.LoginWithGoogle)
@@ -88,6 +97,6 @@ func setupRoutes(app *fiber.App) {
 	api.Get("/stories", routes.GetStories)
 
 	// Protected web route
-	protected.Get("/dashboard", routes.Dashboard)
-	protected.Get("/story", routes.ViewStory)
+	// protected.Get("/dashboard", routes.Dashboard)
+	// protected.Get("/story", routes.ViewStory)
 }
